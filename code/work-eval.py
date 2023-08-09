@@ -1,3 +1,4 @@
+from __future__ import annotations
 import argparse
 import logging
 import os
@@ -34,6 +35,9 @@ import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import LambdaLR
 import math
 import scipy.misc
+import cv2
+from PIL import Image
+from medpy.metric import binary
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='prostate', choices=['fundus', 'prostate'])
@@ -159,19 +163,73 @@ elif args.dataset == 'prostate':
 n_part = len(part)
 dice_calcu = {'fundus':metrics.dice_coeff_2label, 'prostate':metrics.dice_coeff}
 
+
+import cv2
+import numpy as np
+
+from numpy import ndarray
+
+
+def draw_contour(
+    image: ndarray,
+    label: ndarray,
+    color: tuple[int, int, int],
+) -> ndarray:
+    """Draw contour of label on image with color.
+
+    Uses `cv2.dilate` to find contour.
+
+    Args:
+        image: ndarray of shape (h, w, 3)
+        label: ndarray of shape (h, w) where non-zero values are foreground
+        color: color of contour
+    """
+    binary = (label > 0).astype('uint8') * 255
+    dilated = cv2.dilate(binary, np.ones((3, 3), dtype='uint8'), iterations=1)
+    contour_mask = (dilated - binary) > 0
+    image[contour_mask] = color
+    return image
+
+
+def make_prediction(
+    image: ndarray,
+    *predictions: tuple[ndarray, tuple[int, int, int]],
+) -> ndarray:
+    """Draw contour of predictions on image.
+
+    Args:
+        image: ndarray of shape (h, w) or (h, w, 3)
+            if image is (h, w), it will be repeated to (h, w, 3)
+        predictions: each prediction is a tuple of (label, color)
+            label: ndarray of shape (c, h, w) or (h, w)
+                where c is number of classes or 1
+            color: color of contour
+    """
+    if image.ndim == 2:
+        # expand to (h, w, 3)
+        image = np.repeat(image[..., np.newaxis], 3, axis=-1)
+
+    for prediction, color in predictions:
+        if prediction.ndim == 2:
+            # expand to (1, h, w)
+            prediction = prediction[np.newaxis, ...]
+        for class_map in prediction:
+            image = draw_contour(image, class_map, color)
+    return image
+
+
 @torch.no_grad()
 def test(args, model, test_dataloader, epoch, writer, ema=True):
     model.eval()
     model_name = 'ema' if ema else 'stu'
     val_loss = 0.0
-    val_dice = [0.0] * n_part
-    domain_metrics = []
+    val_dice, val_hd, val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
     domain_num = len(test_dataloader)
     for i in range(domain_num):
         cur_dataloader = test_dataloader[i]
         dc = -1
         domain_val_loss = 0.0
-        domain_val_dice = [0.0] * n_part
+        domain_val_dice, domain_val_hd, domain_val_asd = [0.0] * n_part, [0.0] * n_part, [0.0] * n_part
         num = 0
         for batch_num,sample in enumerate(cur_dataloader):
             dc = sample['dc'][0].item()
@@ -186,10 +244,11 @@ def test(args, model, test_dataloader, epoch, writer, ema=True):
             output = model(data)
             loss_seg = torch.nn.BCEWithLogitsLoss()(output, mask)
 
-            if args.eval:
+            if args.eval and False:
                 for j in range(len(data)):
                     num += 1
                     eval_dice = dice_calcu[args.dataset](np.asarray(torch.sigmoid(output[j].cpu()))>=0.5, mask[j].clone().cpu())
+                    
                     if args.dataset == 'fundus':
                         gt = torch.zeros(cup_mask[j][0].shape)
                         gt[disc_mask[j][0] == 1] = 0.5
@@ -197,30 +256,58 @@ def test(args, model, test_dataloader, epoch, writer, ema=True):
                         pred = torch.zeros(cup_mask[j][0].shape)
                         pred[output[j, 1].sigmoid().ge(0.5)] = 0.5
                         pred[output[j, 0].sigmoid().ge(0.5)] = 1
+                        seg_res = ((data[j]+1)*127.5).clone().cpu().numpy().astype(np.uint8).transpose(1,2,0)
+                        seg_res = cv2.cvtColor(seg_res, cv2.COLOR_RGB2BGR)
+                        pred_cup = output[j,0].clone().sigmoid().ge(0.5).float().cpu().numpy()
+                        pred_disc = output[j,1].clone().sigmoid().ge(0.5).float().cpu().numpy()
+                        gt_cup_mask = mask[j,0].clone().cpu().numpy()
+                        gt_dics_mask = mask[j,1].clone().cpu().numpy()
+                        seg_res = make_prediction(seg_res, (pred_cup, (255, 0, 0)), (gt_cup_mask, (0,0,255)), (pred_disc, (0, 255, 0)), (gt_dics_mask, (0,0,255)))
                         grid_image = make_grid([make_grid(data[j, ...].clone().cpu().data, 1, normalize=True), 
                                 gt.clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                 pred.clone().unsqueeze(0).repeat(3,1,1).cpu().data],3,padding=2, pad_value=1)
+                        cv2.imwrite('./img/1/domain{}_{}.png'.format(dc, num), seg_res)
+                        # plt.imshow(oriimg)
+                        # plt.savefig('./img/1/domain{}_{}.png'.format(dc, num))
+                        # plt.cla()
                     elif args.dataset == 'prostate':
-                        grid_image = make_grid([make_grid(data[j, ...].clone().cpu().data, 1, normalize=True), 
-                                    mask[j, ...].clone().repeat(3,1,1).cpu().data, 
-                                    torch.sigmoid(output)[j, 0, ...].clone().repeat(3,1,1).ge(0.5).float().cpu().data],3,padding=2, pad_value=1)
-                    # if any([eval_dice[i] < 0.8 for i in range(n_part)]):
-                    #     text = 'lb_domain{}/bad/domain{}/'.format(epoch, dc)
-                    # else:
-                    #     text = 'lb_domain{}/good/domain{}/'.format(epoch, dc)
-                    # text = 'lb_domain{}/domain{}/'.format(epoch, dc)
-                    # for n, d in enumerate(eval_dice):
-                    #     text += str(round(d, 4))
-                    #     if n != n_part-1:
-                    #         text += '_'
+                        seg_res = ((data[j][0]+1)*127.5).clone().cpu().numpy()
+                        pred = output[j,0].clone().sigmoid().ge(0.5).float().cpu().numpy()
+                        gt_mask = mask[j,0].clone().cpu().numpy()
+                        seg_res = make_prediction(seg_res, (pred, (0, 255, 0)), (gt_mask, (0,0,255)))
+                        grid_image = make_grid([make_grid(data[0, ...].clone().cpu().data, 1, normalize=True), 
+                        mask[0, ...].clone().repeat(3,1,1).cpu().data, 
+                        torch.sigmoid(output)[0, ...].clone().repeat(3,1,1).ge(0.5).float().cpu().data],3,padding=2, pad_value=1)
+                        cv2.imwrite('./img/1/domain{}_{}.png'.format(dc, num), seg_res)
+                    # plt.imshow(seg_res)
+                    # plt.savefig('./img/'+self.img_name_pool[index]+'weakimg.png')
+                    # plt.cla()
+                    # image = Image.fromarray(seg_res)
+                    # image.save('../img/prostate/domain{}_{}.png'.format(dc, num))
                     text = 'lb_domain{}/domain{}/{}'.format(epoch, dc, num)
                     writer.add_image(text, grid_image, 1)
 
             dice = dice_calcu[args.dataset](np.asarray(torch.sigmoid(output.cpu()))>=0.5,mask.clone().cpu())
-            
+            hd, asd = [0.0] * n_part, [0.0] * n_part
+            for j in range(len(data)):
+                for i, p in enumerate(part):
+                    if torch.sigmoid(output[j, i, ...].cpu()).ge(0.5).float().sum() < 1e-4:
+                        hd[i] += 100
+                        asd[i] += 100
+                    else:
+                        hd[i] += binary.hd95(np.asarray(torch.sigmoid(output[j, i, ...].cpu())>=0.5, dtype=bool),
+                                            np.asarray(mask[j, i, ...].clone().cpu(), dtype=bool))
+                        asd[i] += binary.asd(np.asarray(torch.sigmoid(output[j, i, ...].cpu())>=0.5, dtype=bool),
+                                            np.asarray(mask[j, i, ...].clone().cpu(), dtype=bool))
+            for i, p in enumerate(part):
+                hd[i] /= len(data)
+                asd[i] /= len(data)
+
             domain_val_loss += loss_seg.item()
             for i in range(len(domain_val_dice)):
                 domain_val_dice[i] += dice[i]
+                domain_val_hd[i] += hd[i]
+                domain_val_asd[i] += asd[i]
             if args.dataset == 'fundus':
                 grid_image = make_grid([make_grid(data[0, ...].clone().cpu().data, 1, normalize=True), 
                         mask[0, 0, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
@@ -241,11 +328,23 @@ def test(args, model, test_dataloader, epoch, writer, ema=True):
         for i in range(len(domain_val_dice)):
             domain_val_dice[i] /= len(cur_dataloader)
             val_dice[i] += domain_val_dice[i]
+            domain_val_hd[i] /= len(cur_dataloader)
+            val_hd[i] += domain_val_hd[i]
+            domain_val_asd[i] /= len(cur_dataloader)
+            val_asd[i] += domain_val_asd[i]
         for n, p in enumerate(part):
             writer.add_scalar('{}_val/domain{}/val_{}_dice'.format(model_name, dc, p), domain_val_dice[n], epoch)
+            writer.add_scalar('{}_val/domain{}/val_{}_hd'.format(model_name, dc, p), domain_val_hd[n], epoch)
+            writer.add_scalar('{}_val/domain{}/val_{}_asd'.format(model_name, dc, p), domain_val_asd[n], epoch)
         text = 'domain%d epoch %d : loss : %f' % (dc, epoch, domain_val_loss)
         for n, p in enumerate(part):
             text += ' val_%s_dice: %f' % (p, domain_val_dice[n])
+            text += ','
+        for n, p in enumerate(part):
+            text += ' val_%s_hd: %f' % (p, domain_val_hd[n])
+            text += ','
+        for n, p in enumerate(part):
+            text += ' val_%s_asd: %f' % (p, domain_val_asd[n])
             if n != n_part-1:
                 text += ','
         logging.info(text)
@@ -255,11 +354,21 @@ def test(args, model, test_dataloader, epoch, writer, ema=True):
     writer.add_scalar('{}_val/loss'.format(model_name), val_loss, epoch)
     for i in range(len(val_dice)):
         val_dice[i] /= domain_num
+        val_hd[i] /= domain_num
+        val_asd[i] /= domain_num
     for n, p in enumerate(part):
         writer.add_scalar('{}_val/val_{}_dice'.format(model_name, p), val_dice[n], epoch)
+        writer.add_scalar('{}_val/val_{}_hd'.format(model_name, p), val_hd[n], epoch)
+        writer.add_scalar('{}_val/val_{}_asd'.format(model_name, p), val_asd[n], epoch)
     text = 'epoch %d : loss : %f' % (epoch, val_loss)
     for n, p in enumerate(part):
         text += ' val_%s_dice: %f' % (p, val_dice[n])
+        text += ','
+    for n, p in enumerate(part):
+        text += ' val_%s_hd: %f' % (p, val_hd[n])
+        text += ','
+    for n, p in enumerate(part):
+        text += ' val_%s_asd: %f' % (p, val_asd[n])
         if n != n_part-1:
             text += ','
     logging.info(text)
@@ -417,9 +526,12 @@ def train(args, snapshot_path):
 
     if args.eval:
         # for i in range(1,5):
-        #     model.load_state_dict(torch.load('../model/lb{}_r0.2_fixmatch_th0.9/unet_disc_dice_best_model.pth'.format(i)))
+        #     if i == 5:
+        #         model.load_state_dict(torch.load('../model/'+args.dataset+'/work_lb{}_qlen25_v2/unet_cup_dice_best_model.pth'.format(i)))
+        #     else:
+        #         model.load_state_dict(torch.load('../model/'+args.dataset+'/20lb{}_work_cons2.0/unet_disc_dice_best_model.pth'.format(i)))
         #     test(args, model,test_dataloader,i,writer)
-        model.load_state_dict(torch.load('../model/'+args.dataset+'/cutmix_lb4_seed_1333/unet_dice_best_model.pth'))
+        model.load_state_dict(torch.load('../model/'+args.dataset+'/work_lb4_qlen20_v2/unet_cup_dice_best_model.pth'))
         test(args, model,test_dataloader,args.lb_domain,writer)
         exit()
 

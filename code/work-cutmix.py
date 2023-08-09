@@ -555,47 +555,21 @@ def train(args, snapshot_path):
             lb_mask_shape = [len(lb_x_w), num_classes, patch_size, patch_size]
             ulb_mask_shape = [len(ulb_x_w), num_classes, patch_size, patch_size]
 
-                # for i in range(len(lb_x_w)):
-                #     plt.imshow(((np.array(lb_x_w[i][0].cpu())+1)*127.5).astype(np.uint8),cmap='Greys_r')
-                #     plt.savefig('./img/'+'lb_x_w_{}.png'.format(i))
-                #     plt.cla()
-                # for i in range(len(ulb_x_w)):
-                #     plt.imshow(((np.array(ulb_x_w[i][0].cpu())+1)*127.5).astype(np.uint8),cmap='Greys_r')
-                #     plt.savefig('./img/'+'ulb_x_w_{}.png'.format(i))
-                #     plt.cla()
-                # for i in range(len(ulb_x_s)):
-                #     plt.imshow(((np.array(ulb_x_s[i][0].cpu())+1)*127.5).astype(np.uint8),cmap='Greys_r')
-                #     plt.savefig('./img/'+'ulb_x_s_{}.png'.format(i))
-                #     plt.cla()
-                # for i in range(len(lb_y)):
-                #     plt.imshow(np.array(lb_y[i].cpu()).astype(np.uint8).transpose(1,2,0))
-                #     plt.savefig('./img/'+'lb_{}.png'.format(i))
-                #     plt.cla()
-                # for i in range(len(ulb_y)):
-                #     plt.imshow(np.array(ulb_y[i].cpu()).astype(np.uint8).transpose(1,2,0))
-                #     plt.savefig('./img/'+'ulb_{}.png'.format(i))
-                #     plt.cla()
-                # print(lb_name, ulb_name)
-
             with amp_cm():
 
-                if simple_ulb is None or len(simple_ulb) == 0:
-                    cut_img = lb_x_w.clone()
-                    cut_label = lb_mask.clone()
-                    cut_mask = torch.ones(lb_mask_shape).cuda()
-                    choice = np.random.randint(0, len(lb_x_w), len(ulb_x_s))
+                if simple_ulb is not None and len(simple_ulb) > 0:
+                    choice_in_simple_num = min(args.label_bs, len(simple_ulb))
+                    choice_in_simple = np.random.randint(0, len(simple_ulb), choice_in_simple_num)
+                    cut_img = simple_ulb[choice_in_simple].clone()
+                    cut_label = cor_pl[choice_in_simple].clone()
+                    cut_mask = cor_mask[choice_in_simple].clone()
+                    cut_gt = cor_gt[choice_in_simple].clone()
+                    logits_c_x = model(cut_img)
+                    prob_c_x = logits_c_x.sigmoid()
+                    loss_c = (bce_loss(logits_c_x, cut_label) * cut_mask).mean()
                 else:
-                    cut_img = torch.cat((lb_x_w.clone(), simple_ulb), dim=0)
-                    cut_label = torch.cat((lb_mask.clone(), cor_pl), dim=0)
-                    cut_mask = torch.cat((torch.ones(lb_mask_shape).cuda(), cor_mask), dim=0)
-                    choice_in_simple_num = min(int(len(ulb_x_s)*0.5), len(simple_ulb))
-                    choice_in_lb_num = len(ulb_x_s) - choice_in_simple_num
-                    choice_in_lb = np.random.randint(0,len(lb_x_w), choice_in_lb_num)
-                    choice_in_simple = np.random.randint(len(lb_x_w), len(lb_x_w)+len(simple_ulb), choice_in_simple_num)
-                    choice = np.random.permutation(np.concatenate((choice_in_lb, choice_in_simple)))
-                cutmix_box = torch.stack([obtain_cutmix_box(img_size=patch_size, p=args.cutmix_prob) for i in range(len(ulb_x_s))], dim=0)
-                mix_img = cut_img[choice]
-                ulb_x_s[cutmix_box.unsqueeze(1).expand(ulb_x_s.shape) == 1] = mix_img[cutmix_box.unsqueeze(1).expand(ulb_x_s.shape) == 1]
+                    loss_c = 0
+
 
                 # outputs for model
                 logits_lb_x_w = model(lb_x_w)
@@ -712,13 +686,9 @@ def train(args, snapshot_path):
 
                 mask = prob_ulb_x_w.ge(threshold).float() + prob_ulb_x_w.le(1-threshold).float()
                 
-                mask[cutmix_box.unsqueeze(1).expand(ulb_mask_shape) == 1] = cut_mask[choice][cutmix_box.unsqueeze(1).expand(ulb_mask_shape) == 1]
-                # print(cut_mask.shape)
-                # print(cut_mask.sum((-3,-2,-1)))
-                pseudo_label[cutmix_box.unsqueeze(1).expand(pseudo_label.shape) == 1] = cut_label[choice][cutmix_box.unsqueeze(1).expand(pseudo_label.shape) == 1]
                 unsup_loss = (bce_loss(logits_ulb_x_s, pseudo_label) * mask).mean()
                 
-                loss = sup_loss + consistency_weight * unsup_loss
+                loss = sup_loss + consistency_weight * (loss_c + unsup_loss)
 
             optimizer.zero_grad()
 
@@ -758,31 +728,45 @@ def train(args, snapshot_path):
                 p_bar.set_description('iteration %d : loss:%f, sup_loss:%f, unsup_loss:%f, cons_w:%f, mask_ratio:%f, ulb_dice:%f, ref:%f, disulb:%f' 
                                     % (iter_num, loss.item(), sup_loss.item(), unsup_loss.item(), consistency_weight, mask.mean(), ulb_dice[0], ref.avg[0], disulb.avg[0]))
             if iter_num % 200 == 0:
-            # if cm_flag and pred[0] == 0:
-                # logging.info('draw confidence-dice table...')
-                # confidence_dice.append([mask.mean(), ulb_dice])
-                # idx = int((iter_num-1)/(max_iterations/3))
-                # ax.scatter(mask.mean().item(), ulb_dice, c = color_list[idx], s = 16, alpha=0.3)
-                # plt.savefig(img_save_path)
-                # logging.info('record train img...')
                 if args.dataset == 'fundus':
-                    lb_image = make_grid([make_grid(lb_x_w[0, ...].clone().cpu().data,1,normalize=True), lb_mask[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                    lb_image = make_grid([make_grid(lb_x_w[0, ...].clone().cpu().data,1,normalize=True), 
+                                            lb_mask[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                             logits_lb_x_w.sigmoid()[0, 0, ...].clone().unsqueeze(0).repeat(3,1,1).ge(0.5).float().cpu().data, 
                                             lb_mask[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                             logits_lb_x_w.sigmoid()[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).ge(0.5).float().cpu().data],5,padding=2, pad_value=1)
-                    ulb_image = make_grid([make_grid(ulb_x_w[0, ...].clone().cpu().data,1,normalize=True), ulb_mask[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                    ulb_image = make_grid([make_grid(ulb_x_w[0, ...].clone().cpu().data,1,normalize=True), 
+                                            ulb_mask[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                             ulb_mask[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                             make_grid(ulb_x_s[0, ...].clone().cpu().data,1,normalize=True),
                                             pseudo_label[0, 0, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
                                             pseudo_label[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data],3,padding=2, pad_value=1)
+                    if simple_ulb is not None and len(simple_ulb) > 0:
+                        c_image = make_grid([make_grid(cut_img[0, ...].clone().cpu().data,1,normalize=True), 
+                                            cut_gt[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            cut_gt[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            cut_label[0,0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            cut_label[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            prob_c_x[0, 0, ...].clone().unsqueeze(0).repeat(3,1,1).ge(0.5).float().cpu().data, 
+                                            prob_c_x[0, 1, ...].clone().unsqueeze(0).repeat(3,1,1).ge(0.5).float().cpu().data],4,padding=2, pad_value=1)
+
                 elif args.dataset == 'prostate':
-                    lb_image = make_grid([make_grid(lb_x_w[0, ...].clone().cpu().data,1,normalize=True), lb_mask[0,...].clone().repeat(3,1,1).cpu().data, 
+                    lb_image = make_grid([make_grid(lb_x_w[0, ...].clone().cpu().data,1,normalize=True), 
+                                            lb_mask[0,...].clone().repeat(3,1,1).cpu().data, 
                                             logits_lb_x_w.sigmoid()[0, ...].clone().repeat(3,1,1).ge(0.5).float().cpu().data],3,padding=2, pad_value=1)
-                    ulb_image = make_grid([make_grid(ulb_x_w[0, ...].clone().cpu().data,1,normalize=True), ulb_mask[0,...].clone().repeat(3,1,1).cpu().data, 
-                                            make_grid(ulb_x_s[0, ...].clone().cpu().data,1,normalize=True), pseudo_label[0, ...].clone().repeat(3,1,1).cpu().data],4,padding=2, pad_value=1)
+                    ulb_image = make_grid([make_grid(ulb_x_w[0, ...].clone().cpu().data,1,normalize=True), 
+                                            ulb_mask[0,...].clone().repeat(3,1,1).cpu().data, 
+                                            make_grid(ulb_x_s[0, ...].clone().cpu().data,1,normalize=True), 
+                                            pseudo_label[0, ...].clone().repeat(3,1,1).cpu().data],4,padding=2, pad_value=1)
+                    if simple_ulb is not None and len(simple_ulb) > 0:
+                        c_image = make_grid([make_grid(cut_img[0, ...].clone().cpu().data,1,normalize=True), 
+                                            cut_gt[0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            cut_label[0,...].clone().unsqueeze(0).repeat(3,1,1).cpu().data, 
+                                            prob_c_x[0, ...].clone().unsqueeze(0).repeat(3,1,1).ge(0.5).float().cpu().data],4,padding=2, pad_value=1)
                 if args.save_image:
                     writer.add_image("train/lb_sample", lb_image, iter_num)
                     writer.add_image("train/ulb_sample", ulb_image, iter_num)
+                    if simple_ulb is not None and len(simple_ulb) > 0:
+                        writer.add_image("train/cut_sample", c_image, iter_num)
                 logging.info('iteration %d : loss : %f, sup_loss : %f, unsup_loss : %f, cons_w : %f, mask_ratio : %f' 
                                     % (iter_num, loss.item(), sup_loss.item(), unsup_loss.item(), consistency_weight, mask.mean()))
                 text = ''

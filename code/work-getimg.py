@@ -35,6 +35,7 @@ from torch.optim.lr_scheduler import LambdaLR
 import math
 import scipy.misc
 from PIL import Image
+import cv2
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', type=str, default='fundus', choices=['fundus', 'prostate'])
@@ -77,13 +78,33 @@ args = parser.parse_args()
 def create_model(ema=False):
         # Network definition
         if args.model == 'unet':
-            model = UNet(n_channels = 3, n_classes = 1)
+            model = UNet(n_channels = 3, n_classes = 2)
         if ema:
             for param in model.parameters():
                 param.detach_()
         return model.cuda()
 
 model = create_model()
+
+def obtain_cutmix_box(img_size, p=0.5, size_min=0.02, size_max=0.4, ratio_1=0.3, ratio_2=1/0.3):
+    mask = torch.zeros(img_size, img_size)
+    if random.random() > p:
+        return mask
+
+    size = np.random.uniform(size_min, size_max) * img_size * img_size
+    while True:
+        ratio = np.random.uniform(ratio_1, ratio_2)
+        cutmix_w = int(np.sqrt(size / ratio))
+        cutmix_h = int(np.sqrt(size * ratio))
+        x = np.random.randint(0, img_size)
+        y = np.random.randint(0, img_size)
+
+        if x + cutmix_w <= img_size and y + cutmix_h <= img_size:
+            break
+
+    mask[y:y + cutmix_h, x:x + cutmix_w] = 1
+
+    return mask
 
 def train(args, snapshot_path):
 
@@ -122,9 +143,27 @@ def train(args, snapshot_path):
         tr.ToTensor()
     ])
 
+    img_path = os.path.join('../img/fundus/4/u_c.png')
+    x = Image.open(img_path).convert('RGB').resize((256, 256), Image.LANCZOS)
+    y = Image.open(img_path.replace('image', 'mask'))
+    if y.mode is 'RGB':
+        y = y.convert('L')
+    y = y.resize((256, 256), Image.NEAREST)
+    model.load_state_dict(torch.load('../model/'+args.dataset+'/20plmaskcutmix1.0005_lb1/unet_cup_dice_best_model.pth'))
+    train_sample = {'image': np.array(x), 'label':np.array(y)}
+    train_sample = normal_toTensor(train_sample)
+    train_x = train_sample['image'].unsqueeze(0).cuda()
+    pred = model(train_x)[0].sigmoid().ge(0.5).float().cpu()
+    pred_img = torch.zeros(plc.shape)
+    pred_img[pred[1] == 1] = 128
+    pred_img[pred[0] == 1] = 0
+    pred_img = pred_img.numpy()
+    cv2.imwrite(snapshot_path+'pred.png', np.array(pred_img).astype(np.uint8))
+    exit()
+
     domain_name = {1:'Domain1', 2:'Domain2', 3:'Domain3', 4:'Domain4'}
-    domain = 1
-    img_name = 'ndrishtiGS_046.png'
+    domain = 4
+    img_name = 'V0029.png'
     base_dir='/data/qinghe/data/Fundus'
     img_path = os.path.join(base_dir, domain_name[domain], 'train/ROIs/image/',img_name)
     
@@ -135,26 +174,84 @@ def train(args, snapshot_path):
         target = target.convert('L')
     target = target.resize((256, 256), Image.NEAREST)
 
-    sample = {'image': img, 'label': target, 'img_name': img_name}
+    sample = {'image': img, 'label': target, 'img_name': img_name, 'dc': domain}
     sample = weak(sample)
     weak_img = sample['image']
     strong_img = strong(weak_img)
 
-    plt.imshow((np.array(img)).astype(np.uint8))
-    plt.savefig(snapshot_path+'ori.png')
+    # plt.imshow((np.array(img)).astype(np.uint8))
+    # plt.savefig(snapshot_path+'ori.png')
+    # plt.cla()
+    # plt.imshow((np.array(sample['image'])).astype(np.uint8))
+    # plt.savefig(snapshot_path+'weakimg.png')
+    # plt.cla()
+    # plt.imshow((np.array(strong_img)).astype(np.uint8))
+    # plt.savefig(snapshot_path+'strongimg.png')
+    # plt.cla()
+    # plt.imshow(np.array(sample['label']).astype(np.uint8),cmap='Greys_r')
+    # plt.savefig(snapshot_path+'weakmask.png')
+    # plt.cla()
+    cv2.imwrite(snapshot_path+'ori.png', cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'weakimg.png', cv2.cvtColor(np.array(sample['image']), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'strongimg.png', cv2.cvtColor(np.array(strong_img), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'weakmask.png', np.array(sample['label']))
+
+    domain = 1
+    img_name = 'ndrishtiGS_035.png'
+    img_path = os.path.join(base_dir, domain_name[domain], 'train/ROIs/image/',img_name)
+    x = Image.open(img_path).convert('RGB').resize((256, 256), Image.LANCZOS)
+    y = Image.open(img_path.replace('image', 'mask'))
+    if y.mode is 'RGB':
+        y = y.convert('L')
+    y = y.resize((256, 256), Image.NEAREST)
+    x_sample = {'image': x, 'label': y, 'img_name': img_name, 'dc': domain}
+    x_sample = weak(x_sample)
+    x_weak_img = x_sample['image']
+    # plt.imshow((np.array(x)).astype(np.uint8))
+    # plt.savefig(snapshot_path+'x_ori.png')
+    # plt.cla()
+    # plt.imshow((np.array(x_sample['image'])).astype(np.uint8))
+    # plt.savefig(snapshot_path+'x_weakimg.png')
+    # plt.cla()
+    # plt.imshow(np.array(x_sample['label']).astype(np.uint8),cmap='Greys_r')
+    # plt.savefig(snapshot_path+'x_weakmask.png')
+    # plt.cla()
+
+    cv2.imwrite(snapshot_path+'x_ori.png', cv2.cvtColor(np.array(x), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'x_weakimg.png', cv2.cvtColor(np.array(x_sample['image']), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'x_weakmask.png', np.array(x_sample['label']))
+
+    box = obtain_cutmix_box(patch_size, 1)
+    # plt.imshow(np.array(box).astype(np.uint8),cmap='Greys_r')
+    # plt.savefig(snapshot_path+'box.png')
+    # plt.cla()
+    
+    cv2.imwrite(snapshot_path+'box.png', np.array(box*255).astype(np.uint8))
+
+    uc = np.array(strong_img).copy()
+    uc[box==1] = np.array(x_weak_img)[box==1]
+    plc = np.array(sample['label']).copy()
+    plc[box==1] = np.array(x_sample['label'])[box==1]
+    plt.imshow((np.array(uc)).astype(np.uint8))
+    plt.savefig(snapshot_path+'u_c.png')
     plt.cla()
-    plt.imshow((np.array(sample['image'])).astype(np.uint8))
-    plt.savefig(snapshot_path+'weakimg.png')
-    plt.cla()
-    plt.imshow((np.array(strong_img)).astype(np.uint8))
-    plt.savefig(snapshot_path+'strongimg.png')
-    plt.cla()
-    plt.imshow(np.array(sample['label']).astype(np.uint8),cmap='Greys_r')
-    plt.savefig(snapshot_path+'weakmask.png')
+    plt.imshow(np.array(plc).astype(np.uint8),cmap='Greys_r')
+    plt.savefig(snapshot_path+'plc.png')
     plt.cla()
 
+    cv2.imwrite(snapshot_path+'u_c.png', cv2.cvtColor(np.array(uc).astype(np.uint8), cv2.COLOR_RGB2BGR))
+    cv2.imwrite(snapshot_path+'plc.png', np.array(plc).astype(np.uint8))
 
-
+    model.load_state_dict(torch.load('../model/'+args.dataset+'/20plmaskcutmix1.0005_lb1/unet_cup_dice_best_model.pth'))
+    train_sample = {'image': np.array(uc), 'label':np.array(plc)}
+    train_sample = normal_toTensor(train_sample)
+    train_x = train_sample['image'].unsqueeze(0)
+    pred = model(train_x)[0].sigmoid().ge(0.5).float()
+    pred_img = torch.zeros(plc.shape)
+    pred_img[pred[1] == 1] = 128
+    pred_img[pred[0] == 1] = 0
+    pred_img = pred_img.numpy()
+    cv2.imwrite(snapshot_path+'pred.png', np.array(pred_img).astype(np.uint8))
             
 
 
@@ -170,6 +267,8 @@ if __name__ == "__main__":
         train_data_path='../../data/Fundus'
     elif args.dataset == 'prostate':
         train_data_path="../../data/ProstateSlice"
+        
+    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
     if not os.path.exists(snapshot_path):
         os.makedirs(snapshot_path)
