@@ -313,17 +313,9 @@ def train(args, snapshot_path):
 
     max_iterations = args.max_iterations
     weak = transforms.Compose([tr.RandomScaleCrop(patch_size),
-            # tr.RandomCrop(512),
             tr.RandomScaleRotate(fillcolor=fillcolor),
-            # tr.RandomRotate(),
             tr.RandomHorizontalFlip(),
-            # tr.RandomFlip(),
             tr.elastic_transform(),
-            # tr.add_salt_pepper_noise(),
-            # tr.adjust_light(),
-            # tr.eraser(),
-            # tr.Normalize_tf(),
-            # tr.ToTensor()
             ])
     
     strong = transforms.Compose([
@@ -348,11 +340,6 @@ def train(args, snapshot_path):
     lb_num = args.lb_num
     lb_idxs = list(range(lb_num))
     unlabeled_idxs = list(range(lb_num, data_num))
-    # start = np.random.randint(0,data_num-lb_num)
-    # logging.info('sample start from %d' % (start))
-    # lb_idxs = list(range(start, start + lb_num))
-    # total = list(range(data_num))
-    # unlabeled_idxs = [x for x in total if x not in lb_idxs]
     test_dataset = []
     test_dataloader = []
     lb_dataset = dataset(base_dir=train_data_path, phase='train', splitid=lb_domain, domain=[lb_domain], 
@@ -568,35 +555,6 @@ def train(args, snapshot_path):
                 else:
                     print('first')
                     logits_ul_lq = None
-                    
-                # if args.dataset == 'fundus':
-                #     tmp_pl = pseudo_label[lq_idx,1].clone()
-                #     tmp_pl[pseudo_label[lq_idx,0].long()==1] = 0.5
-                #     tmp_um = ulb_mask[lq_idx,1].clone()
-                #     tmp_um[ulb_mask[lq_idx,0].long()==1] = 0.5
-                #     pred_lq = logits_lq_s.sigmoid().ge(0.5).float()
-                #     tmp_lq_pl = pred_lq[0,1].clone()
-                #     tmp_lq_pl[pred_lq[0,0].long()==1] = 0.5
-                #     tmp_lq_um = pseudo_label_lq[0,1].clone()
-                #     tmp_lq_um[pseudo_label_lq[0,0].long()==1] = 0.5
-                #     lq_sample = make_grid([make_grid(ulb_x_w[lq_idx, ...].clone().cpu().data,1,normalize=True),
-                #                         tmp_pl.unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         tmp_um.unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         make_grid(lq_s[0].clone().cpu().data,1,normalize=True),
-                #                         tmp_lq_pl.unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         tmp_lq_um.unsqueeze(0).repeat(3,1,1).cpu().data],
-                #                         3,padding=2,pad_value=1)
-                # elif args.dataset == 'prostate':
-                #     tmp_lq_prob = torch.softmax(logits_lq_s, dim=1)
-                #     _, tmp_lq_pl = torch.max(tmp_lq_prob, dim=1)
-                #     lq_sample = make_grid([make_grid(ulb_x_w[lq_idx, ...].clone().cpu().data,1,normalize=True),
-                #                         pseudo_label[lq_idx].clone().unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         ulb_mask[lq_idx].clone().unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         make_grid(lq_s[0].clone().cpu().data,1,normalize=True),
-                #                         tmp_lq_pl[0].clone().unsqueeze(0).repeat(3,1,1).cpu().data,
-                #                         pseudo_label_lq[0].clone().unsqueeze(0).repeat(3,1,1).cpu().data],
-                #                         3,padding=2,pad_value=1)
-                # writer.add_image("train/img1", lq_sample, iter_num)
                 
                 lq_dice = dice_calcu[args.dataset](np.asarray(pseudo_label[[lq_idx]].clone().cpu()), ulb_mask[[lq_idx]].clone().cpu())
                 for i in range(n_part):
@@ -605,9 +563,6 @@ def train(args, snapshot_path):
                 lq_u = ulb_x_w[[lq_idx]].clone()
                 lq_pl = pseudo_label[[lq_idx]].clone()
                 lq_mask = mask[[lq_idx]].clone()
-                
-                       
-                
                 
                 simple_ulb_idx = hardness < choice_th
                 cur_simple_num = simple_ulb_idx.astype(int).sum()
@@ -671,14 +626,7 @@ def train(args, snapshot_path):
                 # print(text)
                 for n, p in enumerate(part):
                     text = "avg_dice_{}: {} other_ulb_avg_dice_{}: {} all_ulb_avg_dice_{}: {}".format(p, avg_dice[n].avg, p, other_ulb_avg_dice[n].avg, p, all_ulb_avg_dice[n].avg)
-                    # print(text)
-
-                # print(len(simple_ulb))
-                # print(cor_dc)
-                # print(dc_record)
-                # print(choice)
-                # print(choice_th)
-
+                    
                 sup_loss = ce_loss(logits_lb_x_w, lb_mask).mean() + \
                             dice_loss(logits_lb_x_w, lb_mask.unsqueeze(1), softmax=softmax, sigmoid=sigmoid, multi=multi)
 
@@ -686,8 +634,6 @@ def train(args, snapshot_path):
                     iter_num // (args.max_iterations/args.consistency_rampup))
 
                 mask_ul[img_box.expand(mask_ul.shape) == 1] = cut_mask[choice][img_box.expand(mask_ul.shape) == 1]
-                # print(cut_mask.shape)
-                # print(cut_mask.sum((-3,-2,-1)))
                 pseudo_label_ul = (pseudo_label * (1-label_box) + cut_label[choice] * label_box).long()
                 if args.dataset == 'fundus':
                     pseudo_label_ul = pseudo_label_ul.float()
@@ -701,11 +647,8 @@ def train(args, snapshot_path):
                 else:
                     unsup_loss = (ce_loss(logits_ulb_x_s_ul, pseudo_label_ul) * mask_ul.squeeze(1)).mean() + \
                                     dice_loss(logits_ulb_x_s_ul, pseudo_label_ul.unsqueeze(1), mask=mask_ul, softmax=softmax, sigmoid=sigmoid, multi=multi)
-                # unsup_lq_loss = (ce_loss(logits_lq_s, pseudo_label_lq) * mask_lq.squeeze(1)).mean() + \
-                #                 dice_loss(logits_lq_s, pseudo_label_lq.unsqueeze(1), mask=mask_lq, softmax=softmax, sigmoid=sigmoid, multi=multi)
                 
                 loss = sup_loss + consistency_weight * unsup_loss
-                # loss = sup_loss + consistency_weight * (unsup_loss + unsup_lq_loss)
 
             optimizer.zero_grad()
 
@@ -781,11 +724,6 @@ def train(args, snapshot_path):
                 for n, p in enumerate(part):
                     text = 'cur simple dice avg %s:%f' % (p, simple_ulb_dice[n])
                     logging.info(text)
-                    
-                # for i in range(5 if len(simple_ulb) > 5 else len(simple_ulb)):
-                #     ulb_image = make_grid([make_grid(simple_ulb[i, ...].clone().cpu().data,1,normalize=True), cor_gt[i,...].clone().repeat(3,1,1).cpu().data, 
-                #                             make_grid(cor_pl[i, ...].clone().cpu().data,1,normalize=True)],4,padding=3, pad_value=1)
-                #     writer.add_image("train/simple_ulb/{}/{}_{}".format(str(i), cor_hardness[i], cor_dc[i].item()), ulb_image, iter_num)
                 
                 logging.info('tmp simple hardness avg:%f' % avg_hardness.avg)
                 logging.info('choice threshold:%f' % choice_th)
@@ -838,14 +776,6 @@ def train(args, snapshot_path):
         logging.info(text)
         logging.info('test stu model')
         stu_val_dice = test(args, model, test_dataloader, epoch_num+1, writer, ema=False)
-        # if iter_num == max_iterations:
-        #     text = 'iter_{}'.format(iter_num)
-        #     for n, p in enumerate(part):
-        #         text += '_{}_dice_{}'.format(p, round(stu_val_dice[n], 4))
-        #     text += '.pth'
-        #     cur_save_path = os.path.join(snapshot_path, text)
-        #     logging.info('save cur model to {}'.format(cur_save_path))
-        #     torch.save(ema_model.state_dict(), cur_save_path)
         text = ''
         for n, p in enumerate(part):
             if stu_val_dice[n] > stu_best_dice[n]:
