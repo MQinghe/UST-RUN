@@ -1,10 +1,10 @@
 # UST-RUN
 
-### 2. Dataset Construction
+### 1. Dataset Construction
 
 The dataset needs to be divided into two folders for training and testing. The training and testing data should be in the format of the "data" folder.
 
-### 3. Train
+### 2. Train
 
 `code/work.py` is the implementation of our method on the Prostate and Fundus dataset.
 
@@ -27,7 +27,7 @@ then simply run:
 python work.py --dataset ... --lb_domain ... --lb_num ... --save_name ... --gpu 0
 ```
 
-### 4. Test
+### 3. Test
 
 To run the evaluation code, please update the path of the dataset in `test.py`:
 
@@ -39,7 +39,7 @@ then simply run:
 python test.py --dataset ... --save_name ... --gpu 0
 ```
 
-### 5. Acknowledgement
+### 4. Acknowledgement
 
 This project is based on the code from the [SSL4MIS](https://github.com/HiLab-git/SSL4MIS) project.
 
