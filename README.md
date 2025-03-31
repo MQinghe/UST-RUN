@@ -1,7 +1,5 @@
 # UST-RUN
 
-### 0. The complete code will be provided upon the acceptance of the paper.
-
 ### 1. Dataset Construction
 
 The dataset needs to be divided into two folders for training and testing. The training and testing data should be in the format of the "data" folder.
