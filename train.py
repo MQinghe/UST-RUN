@@ -625,14 +625,12 @@ def train(args, snapshot_path):
                     choice = np.random.permutation(np.concatenate((choice_in_lb, choice_in_simple)))
                 
                 mix_img = cut_img[choice]
-                # move_ulb = (torch.cat((ulb_x_w[1:], ulb_x_w[:1]), dim=0)+1)*127.5
                 move_transx = []
                 for i in range(len(lb_x_w)):
                     amp_trg = extract_amp_spectrum((ulb_x_w[i].cpu().numpy()+1)*127.5)
                     img_freq = source_to_target_freq(((mix_img[i]+1)*127.5).cpu().numpy(), amp_trg, L=args.LB, degree=iter_num/max_iterations)
                     img_freq = np.clip(img_freq, 0, 255).astype(np.float32)
                     move_transx.append(img_freq)
-                # move_transx = FDA_source_to_target((lb_x_w+1)*127.5, (ulb_x_w+1)*127.5, L=args.LB)
                 move_transx = torch.tensor(np.array(move_transx), dtype=torch.float32)
                 move_transx = move_transx/127.5 -1
                 move_transx = move_transx.cuda()
@@ -647,7 +645,6 @@ def train(args, snapshot_path):
                     logits_w_ul = ema_model(ulb_x_w_ul)
                     ulb_x_w_lu = mix_img * (1-img_box) + ulb_x_w * img_box
                     logits_w_lu = ema_model(ulb_x_w_lu)
-                    # stu_logits_ulb_x_w = model(ulb_x_w)
                     if args.dataset == 'fundus':
                         prob = logits_ulb_x_w.sigmoid()
                         pseudo_label = prob.ge(0.5).float()
@@ -658,8 +655,6 @@ def train(args, snapshot_path):
                         prob_w_lu = logits_w_lu.sigmoid()
                         pseudo_label_w_lu = prob_w_lu.ge(0.5).float()
                         mask_w_lu = prob_w_lu.ge(threshold).float() + prob_w_lu.le(1-threshold).float()
-                        # stu_prob_ulb_x_w = stu_logits_ulb_x_w.sigmoid()
-                        # stu_pseudo_label = stu_prob_ulb_x_w.ge(0.5).float()
                     elif args.dataset == 'prostate' or args.dataset == 'BUSI':
                         prob_ulb_x_w = torch.softmax(logits_ulb_x_w, dim=1)
                         prob, pseudo_label = torch.max(prob_ulb_x_w, dim=1)
@@ -670,8 +665,6 @@ def train(args, snapshot_path):
                         prob_w_lu = torch.softmax(logits_w_lu, dim=1)
                         conf_w_lu, pseudo_label_w_lu = torch.max(prob_w_lu, dim=1)
                         mask_w_lu = (conf_w_lu > threshold).unsqueeze(1).float()
-                        # stu_prob_ulb_x_w = torch.softmax(stu_logits_ulb_x_w, dim=1)
-                        # _, stu_pseudo_label = torch.max(stu_prob_ulb_x_w, dim=1)
                 stu_logits_ulb_x_w = model(ulb_x_w)
                 if args.dataset == 'fundus':
                     stu_prob_ulb_x_w = stu_logits_ulb_x_w.sigmoid()
@@ -976,8 +969,6 @@ if __name__ == "__main__":
         train_data_path="../../data/ProstateSlice"
     elif args.dataset == 'BUSI':
         train_data_path="../../data/Dataset_BUSI_with_GT"
-    elif args.dataset == 'MNMS':
-        train_data_path="../../data/MNMS/mnms"
 
     os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu
 
@@ -995,7 +986,8 @@ if __name__ == "__main__":
         raise Exception('file {} is exist!'.format(snapshot_path))
     if os.path.exists(snapshot_path + '/code'):
         shutil.rmtree(snapshot_path + '/code')
-    shutil.copytree('.', snapshot_path + '/code', shutil.ignore_patterns(['.git', '__pycache__']))
+    # shutil.copytree('.', snapshot_path + '/code', shutil.ignore_patterns(['.git', '__pycache__']))
+    shutil.copy('./{}'.format(sys.argv[0]), snapshot_path + '/{}'.format(sys.argv[0]))
 
     logging.basicConfig(filename=snapshot_path + "/log.txt", level=logging.INFO,
                         format='[%(asctime)s.%(msecs)03d] %(message)s', datefmt='%H:%M:%S')
